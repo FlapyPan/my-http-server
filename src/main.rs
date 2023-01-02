@@ -8,6 +8,8 @@ mod response;
 mod router;
 // 处理器模块
 mod handler;
+// 错误处理模块
+mod error;
 
 use crate::server::Server;
 
