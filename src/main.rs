@@ -11,9 +11,11 @@ mod handler;
 // 错误处理模块
 mod error;
 
-use crate::server::Server;
+use crate::server::{HttpSettings, Server};
 
 #[tokio::main]
 async fn main() {
-    Server::new("127.0.0.1:8080").run().await;
+    let http_settings = HttpSettings::new();
+    let server = Server::new("127.0.0.1:8080", http_settings);
+    server.run().await.unwrap();
 }
