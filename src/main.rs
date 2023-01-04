@@ -10,6 +10,8 @@ mod router;
 mod handler;
 // 错误处理模块
 mod error;
+// 工具模块
+mod utils;
 
 use crate::server::{HttpSettings, Server};
 

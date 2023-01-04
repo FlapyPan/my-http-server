@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::error::{Fail, Result};
+use crate::request::HttpRequest;
 
 #[derive(Clone, Debug)]
 pub struct HttpSettings {
@@ -55,7 +56,14 @@ impl Server {
                 let http_settings = self.http_settings.clone();
                 // 开启一个异步任务
                 tokio::spawn(async move {
-                    handle_conn(&http_settings, stream, address).await.ok();
+                    let mut stream = stream;
+                    match handle_conn(&http_settings, &mut stream, address).await {
+                        Ok(_) => {}
+                        Err(err) => {
+                            println!("{}", err);
+                            write_stream(&mut stream, format!("HTTP/1.1 400\r\ncontent-type: plain/text; charset=utf-8\r\n\r\n{}", err).as_bytes().to_vec()).await;
+                        }
+                    };
                 });
             }
         }
@@ -63,33 +71,41 @@ impl Server {
 }
 
 async fn handle_conn(http_settings: &HttpSettings,
-                     mut stream: TcpStream,
-                     _: SocketAddr) -> Result<()> {
+                     mut stream: &mut TcpStream,
+                     addr: SocketAddr) -> Result<()> {
     // 读取请求
-    let http_response = match read_stream(http_settings, &mut stream).await {
-        Ok((header, body)) => {
-            println!("请求头: {}", header);
-            println!("请求体: {}", String::from_utf8(body)?);
-            // TODO 构建请求结构体、调用handler
-            format!("HTTP/1.1 400\r\ncontent-type: plain/text; charset=utf-8\r\n\r\n{}", header).as_bytes().to_vec()
-        }
-        Err(err) => {
-            format!("HTTP/1.1 400\r\ncontent-type: plain/text; charset=utf-8\r\n\r\n{}", err.to_string()).as_bytes().to_vec()
-        }
-    };
-    // 响应数据
-    stream.write_all(&http_response).await?;
-    stream.flush().await?;
+    let (header, mut body) = read_head(http_settings, &mut stream).await?;
+    let content_length = get_content_length(header.as_str());
+    if content_length > 0 {
+        read_body(&http_settings, &mut stream, &mut body, content_length).await?;
+    }
+    let request = HttpRequest::from(&header, body, addr)?;
+    println!("{:#?}", request.body_utf8());
+    println!("{:#?}", request);
     Ok(())
 }
 
-async fn read_stream(http_settings: &HttpSettings, stream: &mut TcpStream) -> Result<(String, Vec<u8>)> {
+/// 响应数据
+async fn write_stream(stream: &mut TcpStream, content: Vec<u8>) {
+    match stream.write_all(&content).await {
+        Ok(_) => {
+            match stream.flush().await {
+                Ok(_) => {}
+                Err(err) => { println!("{}", err); }
+            }
+        }
+        Err(err) => { println!("{}", err); }
+    };
+}
+
+/// 读取请求头
+async fn read_head(http_settings: &HttpSettings, stream: &mut TcpStream) -> Result<(String, Vec<u8>)> {
     // 初始化缓存
     let mut header = Vec::new();
     let mut body = Vec::new();
     let mut buf = vec![0u8; http_settings.header_buffer];
 
-    // 不停地读取流，直到结束
+    // 不停地读取流，直到读完请求头结束
     let mut read_fails = 0;
     'l: loop {
         // 检查请求头是否超过限制
@@ -140,11 +156,58 @@ async fn read_stream(http_settings: &HttpSettings, stream: &mut TcpStream) -> Re
                 return Fail::from("读取请求头失败");
             }
         }
-        // TODO 检查请求头的Content-length来确认请求体是否读完
     }
     // 将请求头转为utf8字符串
-    Ok((match String::from_utf8(header) {
-        Ok(header) => header,
-        Err(err) => return Fail::from(err),
-    }, body))
+    Ok((String::from_utf8(header)?, body))
+}
+
+/// 从请求头获取Content-Length
+fn get_content_length(head: &str) -> usize {
+    let mut size: usize = 0;
+    for hl in head.lines() {
+        let mut split_hl = hl.splitn(2, ":");
+        if let (Some(key), Some(value)) = (split_hl.next(), split_hl.next()) {
+            if key.trim().to_lowercase().eq("content-length") {
+                size = match value.parse::<usize>() {
+                    Ok(s) => s,
+                    Err(_) => 0
+                };
+            }
+        }
+    }
+    size
+}
+
+/// 读取完整的body
+async fn read_body(http_settings: &HttpSettings,
+                   stream: &mut TcpStream,
+                   body: &mut Vec<u8>,
+                   content_len: usize) -> Result<()> {
+    if content_len > http_settings.max_body_size {
+        return Err(Fail::new("请求体大小超出限制"));
+    }
+    let mut read_fails = 0;
+    while body.len() < content_len {
+        // 计算剩下的大小
+        let rest_len = content_len - body.len();
+        let buf_len = if rest_len > http_settings.body_buffer {
+            http_settings.body_buffer
+        } else { rest_len };
+        let mut buf = vec![0u8; buf_len];
+        let length = match stream.read(&mut buf).await {
+            Ok(len) => { len }
+            Err(_) => { return Err(Fail::new("请求体读取失败")); }
+        };
+        buf.truncate(length);
+        // 追加
+        body.append(&mut buf);
+        // 最多读取次数
+        if length < http_settings.body_buffer {
+            read_fails += 1;
+            if read_fails > http_settings.body_read_attempts {
+                return Fail::from("请求体读取失败");
+            }
+        }
+    }
+    Ok(())
 }

@@ -2,7 +2,9 @@ use std::error::Error as StdError;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::result::Result as StdResult;
 
-pub type Result<T> = StdResult<T, Box<dyn StdError>>;
+pub type Error = Box<dyn StdError + Sync + Send>;
+
+pub type Result<T> = StdResult<T, Error>;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Fail(pub String);
