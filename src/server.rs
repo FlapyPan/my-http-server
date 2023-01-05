@@ -4,6 +4,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::error::{Fail, Result};
 use crate::request::HttpRequest;
+use crate::response::{HttpResponse, HttpStatus};
+use crate::router::Router;
 
 #[derive(Clone, Debug)]
 pub struct HttpSettings {
@@ -61,7 +63,7 @@ impl Server {
                         Ok(_) => {}
                         Err(err) => {
                             println!("{}", err);
-                            write_stream(&mut stream, format!("HTTP/1.1 400\r\ncontent-type: plain/text; charset=utf-8\r\n\r\n{}", err).as_bytes().to_vec()).await;
+                            write_stream(&mut stream, HttpResponse::new(HttpStatus::BadRequest, None, Some(err.to_string().as_bytes().to_vec())).to_vec()).await;
                         }
                     };
                 });
@@ -79,9 +81,10 @@ async fn handle_conn(http_settings: &HttpSettings,
     if content_length > 0 {
         read_body(&http_settings, &mut stream, &mut body, content_length).await?;
     }
-    let request = HttpRequest::from(&header, body, addr)?;
-    println!("{:#?}", request.body_utf8());
-    println!("{:#?}", request);
+    let ip = addr.ip().to_string();
+    let request = HttpRequest::from(&header, body, &ip[..])?;
+    let response = Router::route(request);
+    write_stream(stream, response.to_vec()).await;
     Ok(())
 }
 

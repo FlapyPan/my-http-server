@@ -12,6 +12,8 @@ mod handler;
 mod error;
 // 工具模块
 mod utils;
+// 常量
+mod constant;
 
 use crate::server::{HttpSettings, Server};
 

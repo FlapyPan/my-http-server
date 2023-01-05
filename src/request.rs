@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
+use crate::constant;
 use crate::error::{Fail, Result};
 use crate::utils::split;
 
@@ -43,35 +43,6 @@ impl From<&str> for HttpVersion {
     }
 }
 
-/// 支持的content-type
-#[derive(Debug, PartialEq)]
-pub enum ContentType {
-    ApplicationFormUrlencoded,
-    MultipartFormData,
-    ApplicationJson,
-    ApplicationOctetStream,
-    TextPlain,
-    Unknown,
-}
-
-impl From<&str> for ContentType {
-    fn from(s: &str) -> Self {
-        if s.starts_with("application/x-www-form-urlencoded") {
-            ContentType::ApplicationFormUrlencoded
-        } else if s.starts_with("multipart/form-data") {
-            ContentType::MultipartFormData
-        } else if s.starts_with("application/json") {
-            ContentType::ApplicationJson
-        } else if s.starts_with("application-octet-stream") {
-            ContentType::ApplicationOctetStream
-        } else if s.starts_with("text/plain") {
-            ContentType::TextPlain
-        } else {
-            ContentType::Unknown
-        }
-    }
-}
-
 /// http请求
 #[derive(Debug)]
 pub struct HttpRequest<'a> {
@@ -82,7 +53,7 @@ pub struct HttpRequest<'a> {
     // 请求版本
     version: HttpVersion,
     // 源ip
-    ip: String,
+    ip: &'a str,
     // 请求头
     headers: BTreeMap<String, &'a str>,
     // 参数
@@ -94,7 +65,7 @@ pub struct HttpRequest<'a> {
 impl<'a> HttpRequest<'a> {
     pub fn from(raw_header: &'a str,
                 raw_body: Vec<u8>,
-                address: SocketAddr,
+                ip: &'a str,
     ) -> Result<HttpRequest<'a>> {
         let mut header = raw_header.lines();
         // 获取请求行
@@ -133,7 +104,7 @@ impl<'a> HttpRequest<'a> {
             method,
             url,
             version,
-            ip: address.ip().to_string(),
+            ip,
             headers,
             search_params,
             body,
@@ -174,9 +145,9 @@ fn parse_body(headers: &BTreeMap<String, &str>, body: &[u8]) -> Result<BTreeMap<
     let mut boundary = None;
     // 获取content-type
     let content_type = match headers.get("content-type") {
-        None => ContentType::Unknown,
+        None => constant::TEXT_PLAIN,
         Some(&s) => {
-            let c_type = s.trim().into();
+            let c_type = s.trim();
             for part in s.split(';') {
                 let part = part.trim();
                 if part.starts_with("boundary=") {
@@ -186,23 +157,19 @@ fn parse_body(headers: &BTreeMap<String, &str>, body: &[u8]) -> Result<BTreeMap<
             c_type
         }
     };
-    match content_type {
-        ContentType::ApplicationFormUrlencoded => {
-            // 普通表单
-            parse_parameters(&String::from_utf8(body.to_vec())?, |v| {
-                v.as_bytes().to_vec()
-            })
-        }
-        ContentType::MultipartFormData => {
-            // Multipart表单
-            parse_multipart_form(body, boundary.ok_or_else(|| Fail::new("没有有效的boundary"))?)
-        }
-        _ => {
-            // 其他类型存储为原始字节
-            let mut map = BTreeMap::new();
-            map.insert(String::from("__raw"), body.to_vec());
-            Ok(map)
-        }
+    if content_type.starts_with(constant::APPLICATION_X_WWW_FORM_URLENCODED) {
+        // 普通表单
+        parse_parameters(&String::from_utf8(body.to_vec())?, |v| {
+            v.as_bytes().to_vec()
+        })
+    } else if content_type.starts_with(constant::MULTIPART_FORM_DATA) {
+        // Multipart表单
+        parse_multipart_form(body, boundary.ok_or_else(|| Fail::new("没有有效的boundary"))?)
+    } else {
+        // 其他类型存储为原始字节
+        let mut map = BTreeMap::new();
+        map.insert(String::from("__raw"), body.to_vec());
+        Ok(map)
     }
 }
 
